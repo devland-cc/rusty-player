@@ -22,6 +22,20 @@ class Deck {
     this.normY = 0.5;
     this.dragging = false;
 
+    // Analysis state.
+    this.originalBpm = null;
+    this.originalKey = null;
+    this.firstBeatSecs = 0;
+    this.bpmConfidence = 0;
+    this.keyConfidence = 0;
+
+    // Beat grid: array of beat positions in source-time seconds.
+    this.beatTimes = [];
+    // Local BPM at current playback position (updated in tick loop).
+    this.localBpm = null;
+    // Current tempo multiplier from XY pad (cached for BPM display).
+    this.currentTempo = 1.0;
+
     // DOM refs.
     this.el = {
       info: document.querySelector(`.deck-info[data-deck="${id}"]`),
@@ -31,6 +45,9 @@ class Deck {
       crossV: document.querySelector(`#deck-${id} .crosshair-v`),
       tempoVal: document.querySelector(`.tempo-val[data-deck="${id}"]`),
       pitchVal: document.querySelector(`.pitch-val[data-deck="${id}"]`),
+      bpmVal: document.querySelector(`.bpm-val[data-deck="${id}"]`),
+      keyVal: document.querySelector(`.key-val[data-deck="${id}"]`),
+      beatLed: document.querySelector(`.beat-led[data-deck="${id}"]`),
       timeDisplay: document.querySelector(`.time-display[data-deck="${id}"]`),
     };
 
@@ -102,7 +119,37 @@ class Deck {
       this.el.info.textContent =
         `${file.name} | ${info.channels === 2 ? 'Stereo' : 'Mono'} | ${formatTime(info.duration_secs)}`;
       this.resetXY();
-      setStatus(`Deck ${this.id.toUpperCase()}: loaded`);
+
+      // Run offline BPM + key analysis.
+      try {
+        const analysis = this.player.analyze();
+        this.originalBpm = analysis.bpm > 0 ? analysis.bpm : null;
+        this.originalKey = analysis.key !== '---' ? analysis.key : null;
+        this.firstBeatSecs = analysis.first_beat_secs;
+        this.bpmConfidence = analysis.bpm_confidence;
+        this.keyConfidence = analysis.key_confidence;
+        this.beatTimes = analysis.beat_times || [];
+        this.localBpm = this.originalBpm;
+
+        this.el.bpmVal.textContent = this.originalBpm !== null
+          ? this.originalBpm.toFixed(1) : '---';
+        this.el.keyVal.textContent = this.originalKey || '---';
+
+        const bpmStr = this.originalBpm !== null ? `${this.originalBpm.toFixed(1)} BPM` : '';
+        const keyStr = this.originalKey || '';
+        const sep = bpmStr && keyStr ? ' | ' : '';
+        const beatStr = this.beatTimes.length > 0 ? ` | ${this.beatTimes.length} beats` : '';
+        setStatus(`Deck ${this.id.toUpperCase()}: loaded${sep ? ' | ' + bpmStr + sep + keyStr : ''}${beatStr}`);
+      } catch (err) {
+        console.warn(`[Deck ${this.id}] Analysis error:`, err);
+        this.originalBpm = null;
+        this.originalKey = null;
+        this.beatTimes = [];
+        this.localBpm = null;
+        this.el.bpmVal.textContent = '---';
+        this.el.keyVal.textContent = '---';
+        setStatus(`Deck ${this.id.toUpperCase()}: loaded`);
+      }
     } catch (err) {
       console.error(`[Deck ${this.id}] Load error:`, err);
       setStatus(`Deck ${this.id.toUpperCase()}: ${err}`, 'error');
@@ -126,6 +173,8 @@ class Deck {
     // Pitch: +12 at top, -12 at bottom (one octave each way).
     const semitones = 12 - this.normY * 24;
 
+    this.currentTempo = tempo;
+
     this.el.dot.style.left = (this.normX * 100) + '%';
     this.el.dot.style.top = (this.normY * 100) + '%';
     this.el.crossH.style.top = (this.normY * 100) + '%';
@@ -139,6 +188,17 @@ class Deck {
     this.el.tempoVal.textContent = tempo.toFixed(2) + 'x';
     const sign = semitones > 0 ? '+' : '';
     this.el.pitchVal.textContent = sign + semitones.toFixed(1) + ' st';
+
+    // Update displayed BPM: localBPM (or originalBPM fallback) × currentTempo.
+    const baseBpm = this.localBpm || this.originalBpm;
+    if (baseBpm !== null) {
+      this.el.bpmVal.textContent = (baseBpm * tempo).toFixed(1);
+    }
+
+    // Update displayed key: transpose original key by pitch semitones.
+    if (this.originalKey !== null) {
+      this.el.keyVal.textContent = transposeKey(this.originalKey, semitones);
+    }
   }
 
   resetXY() {
@@ -225,6 +285,123 @@ class Deck {
       this.el.timeDisplay.textContent = `${formatTime(pos)} / ${formatTime(dur)}`;
     }
   }
+
+  /// Update local BPM from beat grid near current playback position.
+  updateLocalBpm() {
+    if (this.beatTimes.length < 2 || !this.player || !this.player.is_loaded() || !this.isPlaying) {
+      return;
+    }
+
+    const sourcePos = this.player.position_secs();
+    const idx = findBeatIndex(this.beatTimes, sourcePos);
+
+    // Average nearby beat intervals (up to 4 intervals on each side).
+    const range = 4;
+    let sum = 0;
+    let count = 0;
+
+    for (let i = Math.max(1, idx - range); i < Math.min(this.beatTimes.length, idx + range); i++) {
+      const interval = this.beatTimes[i] - this.beatTimes[i - 1];
+      if (interval > 0.2 && interval < 2.0) { // 30–300 BPM range sanity.
+        sum += interval;
+        count++;
+      }
+    }
+
+    if (count > 0) {
+      this.localBpm = 60.0 / (sum / count);
+      // Update BPM display with local BPM × current tempo.
+      this.el.bpmVal.textContent = (this.localBpm * this.currentTempo).toFixed(1);
+    }
+  }
+
+  updateBeatLed() {
+    if (!this.player || !this.player.is_loaded() || !this.isPlaying || this.beatTimes.length < 2) {
+      this.el.beatLed.style.opacity = '0.15';
+      this.el.beatLed.style.boxShadow = 'none';
+      return;
+    }
+
+    // Source position in seconds (tracks original timeline regardless of tempo/pitch).
+    const sourcePos = this.player.position_secs();
+    const idx = findBeatIndex(this.beatTimes, sourcePos);
+
+    // Need beats on both sides of current position.
+    if (idx === 0 || idx >= this.beatTimes.length) {
+      this.el.beatLed.style.opacity = '0.15';
+      this.el.beatLed.style.boxShadow = 'none';
+      return;
+    }
+
+    const prevBeat = this.beatTimes[idx - 1];
+    const nextBeat = this.beatTimes[idx];
+    const beatInterval = nextBeat - prevBeat;
+
+    if (beatInterval <= 0) {
+      this.el.beatLed.style.opacity = '0.15';
+      this.el.beatLed.style.boxShadow = 'none';
+      return;
+    }
+
+    // Phase: 0 at prev beat, 1 at next beat.
+    const phase = (sourcePos - prevBeat) / beatInterval;
+
+    // Exponential decay: bright flash at beat, rapid fade.
+    const brightness = 0.15 + 0.85 * Math.exp(-phase * 8.0);
+    this.el.beatLed.style.opacity = brightness.toFixed(3);
+
+    if (brightness > 0.5) {
+      this.el.beatLed.style.boxShadow = `0 0 ${(brightness * 10).toFixed(0)}px #00d4ff`;
+    } else {
+      this.el.beatLed.style.boxShadow = 'none';
+    }
+  }
+}
+
+// --- Helpers ---
+
+/// Binary search: returns index of first beat >= time.
+function findBeatIndex(beatTimes, time) {
+  let lo = 0;
+  let hi = beatTimes.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (beatTimes[mid] < time) {
+      lo = mid + 1;
+    } else {
+      hi = mid;
+    }
+  }
+  return lo;
+}
+
+const NOTE_NAMES = ['C', 'C#', 'D', 'Eb', 'E', 'F', 'F#', 'G', 'Ab', 'A', 'Bb', 'B'];
+
+function transposeKey(keyStr, semitones) {
+  const parts = keyStr.split(' ');
+  if (parts.length !== 2) return keyStr;
+
+  const noteName = parts[0];
+  const quality = parts[1]; // "major" or "minor"
+
+  const idx = NOTE_NAMES.indexOf(noteName);
+  if (idx === -1) return keyStr;
+
+  const shift = Math.round(semitones);
+  const newIdx = ((idx + shift) % 12 + 12) % 12;
+  return NOTE_NAMES[newIdx] + ' ' + quality;
+}
+
+function formatTime(secs) {
+  const m = Math.floor(secs / 60);
+  const s = Math.floor(secs % 60);
+  return `${m}:${s.toString().padStart(2, '0')}`;
+}
+
+function setStatus(msg, cls) {
+  const el = document.getElementById('status');
+  el.textContent = msg;
+  el.className = cls || '';
 }
 
 // --- Config ---
@@ -248,20 +425,6 @@ document.getElementById('crossfader').addEventListener('input', (e) => {
   if (gainNodeB) gainNodeB.gain.value = Math.sin(position * Math.PI / 2);
 });
 
-// --- Helpers ---
-
-function formatTime(secs) {
-  const m = Math.floor(secs / 60);
-  const s = Math.floor(secs % 60);
-  return `${m}:${s.toString().padStart(2, '0')}`;
-}
-
-function setStatus(msg, cls) {
-  const el = document.getElementById('status');
-  el.textContent = msg;
-  el.className = cls || '';
-}
-
 // --- Init ---
 
 async function initApp() {
@@ -283,10 +446,14 @@ async function initApp() {
   const deckA = new Deck('a');
   const deckB = new Deck('b');
 
-  // Time display update loop.
+  // Display + beat LED + local BPM update loop.
   function tick() {
     deckA.updateTimeDisplay();
     deckB.updateTimeDisplay();
+    deckA.updateLocalBpm();
+    deckB.updateLocalBpm();
+    deckA.updateBeatLed();
+    deckB.updateBeatLed();
     requestAnimationFrame(tick);
   }
   requestAnimationFrame(tick);

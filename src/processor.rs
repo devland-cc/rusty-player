@@ -257,6 +257,11 @@ impl AudioProcessor {
         self.output_sample_rate
     }
 
+    /// Access the loaded source samples for offline analysis.
+    pub fn source_samples(&self) -> &[f32] {
+        &self.source_samples
+    }
+
     fn is_bypass(&self) -> bool {
         (self.tempo_ratio - 1.0).abs() < 0.005
             && self.pitch_semitones.abs() < 0.05

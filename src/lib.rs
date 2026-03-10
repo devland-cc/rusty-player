@@ -1,3 +1,4 @@
+mod analysis;
 mod decoder;
 mod processor;
 mod resampler;
@@ -174,5 +175,24 @@ impl RustyPlayer {
 
     pub fn transient_sensitivity(&self) -> f64 {
         self.processor.transient_sensitivity()
+    }
+
+    // --- Offline analysis ---
+
+    /// Run offline BPM + key analysis on the loaded track.
+    /// Returns { bpm, bpm_confidence, key, key_confidence, first_beat_secs }.
+    pub fn analyze(&self) -> Result<JsValue, JsValue> {
+        if !self.processor.is_loaded() {
+            return Err(JsValue::from_str("No track loaded"));
+        }
+
+        let result = analysis::analyze_track(
+            self.processor.source_samples(),
+            self.processor.channels(),
+            self.processor.sample_rate(),
+        );
+
+        serde_wasm_bindgen::to_value(&result)
+            .map_err(|e| JsValue::from_str(&format!("Serialize error: {e}")))
     }
 }

@@ -197,6 +197,23 @@ header h1 {
   font-weight: 600;
 }
 
+/* Analysis display (BPM + Key + LED) */
+.analysis-display {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  justify-content: center;
+}
+
+.beat-led {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #00d4ff;
+  opacity: 0.15;
+  flex-shrink: 0;
+}
+
 /* Transport */
 .deck-transport {
   display: flex;
