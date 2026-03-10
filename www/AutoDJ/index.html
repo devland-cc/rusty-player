@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AutoDJ — rusty-player</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div id="app">
+    <header><h1>AutoDJ</h1></header>
+
+    <div id="decks">
+      <!-- Deck A -->
+      <div class="deck" id="deck-a">
+        <h2>Track A</h2>
+        <label class="file-btn">
+          Load MP3
+          <input type="file" class="deck-file" data-deck="a" accept=".mp3,audio/mpeg" />
+        </label>
+        <div class="deck-info" data-deck="a">No track loaded</div>
+
+        <div class="xy-container">
+          <div class="axis-label label-top">+12 st</div>
+          <div class="axis-label label-bottom">-12 st</div>
+          <div class="axis-label label-left">0.5x</div>
+          <div class="axis-label label-right">1.5x</div>
+          <div class="xy-pad" data-deck="a">
+            <div class="crosshair-h"></div>
+            <div class="crosshair-v"></div>
+            <div class="xy-dot"></div>
+          </div>
+          <button class="btn-reset-xy" data-deck="a" title="Reset to center">RESET</button>
+        </div>
+
+        <div class="param-display">
+          <div class="param">
+            <span class="param-label">TEMPO</span>
+            <span class="tempo-val param-value" data-deck="a">1.00x</span>
+          </div>
+          <div class="param">
+            <span class="param-label">PITCH</span>
+            <span class="pitch-val param-value" data-deck="a">0.0 st</span>
+          </div>
+        </div>
+
+        <div class="deck-transport">
+          <button class="btn-play" data-deck="a" title="Play">&#9654;</button>
+          <button class="btn-pause" data-deck="a" title="Pause">&#9646;&#9646;</button>
+          <span class="time-display" data-deck="a">0:00 / 0:00</span>
+        </div>
+      </div>
+
+      <!-- Deck B -->
+      <div class="deck" id="deck-b">
+        <h2>Track B</h2>
+        <label class="file-btn">
+          Load MP3
+          <input type="file" class="deck-file" data-deck="b" accept=".mp3,audio/mpeg" />
+        </label>
+        <div class="deck-info" data-deck="b">No track loaded</div>
+
+        <div class="xy-container">
+          <div class="axis-label label-top">+12 st</div>
+          <div class="axis-label label-bottom">-12 st</div>
+          <div class="axis-label label-left">0.5x</div>
+          <div class="axis-label label-right">1.5x</div>
+          <div class="xy-pad" data-deck="b">
+            <div class="crosshair-h"></div>
+            <div class="crosshair-v"></div>
+            <div class="xy-dot"></div>
+          </div>
+          <button class="btn-reset-xy" data-deck="b" title="Reset to center">RESET</button>
+        </div>
+
+        <div class="param-display">
+          <div class="param">
+            <span class="param-label">TEMPO</span>
+            <span class="tempo-val param-value" data-deck="b">1.00x</span>
+          </div>
+          <div class="param">
+            <span class="param-label">PITCH</span>
+            <span class="pitch-val param-value" data-deck="b">0.0 st</span>
+          </div>
+        </div>
+
+        <div class="deck-transport">
+          <button class="btn-play" data-deck="b" title="Play">&#9654;</button>
+          <button class="btn-pause" data-deck="b" title="Pause">&#9646;&#9646;</button>
+          <span class="time-display" data-deck="b">0:00 / 0:00</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Crossfader -->
+    <div id="crossfader-section">
+      <span class="cf-label">A</span>
+      <input type="range" id="crossfader" min="0" max="100" value="50" />
+      <span class="cf-label">B</span>
+    </div>
+
+    <div id="status">Initializing...</div>
+  </div>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>

@@ -8,8 +8,9 @@ RUN curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
 RUN rustup target add wasm32-unknown-unknown
 
 WORKDIR /app
-COPY Cargo.toml Cargo.lock ./
+COPY Cargo.toml Cargo.lock build.rs ./
 COPY src/ src/
+COPY www/config/ www/config/
 
 RUN wasm-pack build --target web --out-dir www/pkg --release
 

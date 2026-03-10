@@ -1,14 +1,45 @@
-import init, { RustyPlayer } from './pkg/rusty_player.js';
+import init, { RustyPlayer } from '../pkg/rusty_player.js';
 
 let player = null;
+window._player = null; // Expose for console debugging/toggling features.
 let audioCtx = null;
 let isPlaying = false;
 let trackChannels = 2;
+let config = null;
 
 // Scheduled playback state.
 let nextStartTime = 0;
 let schedulerTimer = null; // Track the active scheduler to prevent duplicates.
 const CHUNK_FRAMES = 4096; // ~93ms at 44100Hz
+
+// --- Config ---
+
+function applyConfigToPlayer(p) {
+  if (!config) return;
+  if (config.gain_comp_amount !== undefined) p.set_gain_comp_amount(config.gain_comp_amount);
+  if (config.mid_side_mode !== undefined) p.set_mid_side_mode(config.mid_side_mode);
+  if (config.phase_lock !== undefined) p.set_phase_lock(config.phase_lock);
+  if (config.transient_detect !== undefined) p.set_transient_detect(config.transient_detect);
+  if (config.cubic_resampler !== undefined) p.set_cubic_resampler(config.cubic_resampler);
+  if (config.soft_limiter !== undefined) p.set_soft_limiter(config.soft_limiter);
+  if (config.transient_sensitivity !== undefined) p.set_transient_sensitivity(config.transient_sensitivity);
+}
+
+function applyConfigToUI() {
+  if (!config) return;
+  const gainPct = Math.round((config.gain_comp_amount ?? 0.35) * 100);
+  document.getElementById('gain-slider').value = gainPct;
+  document.getElementById('gain-value').textContent = gainPct + '%';
+  document.getElementById('btn-ms').className = (config.mid_side_mode ?? true) ? 'toggle-on' : 'toggle-off';
+  document.getElementById('btn-phase-lock').className = (config.phase_lock ?? false) ? 'toggle-on' : 'toggle-off';
+  document.getElementById('btn-transient').className = (config.transient_detect ?? false) ? 'toggle-on' : 'toggle-off';
+  document.getElementById('btn-cubic').className = (config.cubic_resampler ?? false) ? 'toggle-on' : 'toggle-off';
+  document.getElementById('btn-limiter').className = (config.soft_limiter ?? false) ? 'toggle-on' : 'toggle-off';
+  const sensPct = Math.round((config.transient_sensitivity ?? 0.5) * 100);
+  document.getElementById('sens-slider').value = sensPct;
+  document.getElementById('sens-value').textContent = sensPct + '%';
+  document.getElementById('transient-sens').classList.toggle('hidden', !(config.transient_detect ?? false));
+}
 
 // --- Init ---
 
@@ -20,6 +51,15 @@ async function initApp() {
     setStatus(`WASM load failed: ${e}`, 'error');
     return;
   }
+
+  try {
+    config = await fetch('../config/player-defaults.json').then(r => r.json());
+  } catch (e) {
+    console.warn('[rusty] Config load failed, using built-in defaults:', e);
+    config = {};
+  }
+
+  applyConfigToUI();
   setStatus('Ready — load an MP3 file');
 }
 
@@ -39,6 +79,8 @@ document.getElementById('file-input').addEventListener('change', async (e) => {
     }
     if (!player) {
       player = new RustyPlayer(audioCtx.sampleRate);
+      applyConfigToPlayer(player);
+      window._player = player;
     }
 
     const arrayBuf = await file.arrayBuffer();
@@ -131,6 +173,7 @@ document.getElementById('btn-test-tone').addEventListener('click', async () => {
   }
   if (!player) {
     player = new RustyPlayer(audioCtx.sampleRate);
+    window._player = player;
   }
 
   const info = player.load_test_tone();
@@ -269,6 +312,39 @@ document.getElementById('gain-slider').addEventListener('input', (e) => {
   if (player) {
     player.set_gain_comp_amount(pct / 100);
     console.log('[rusty] gain_comp_amount set to', pct / 100, '→ readback:', player.gain_comp_amount());
+  }
+});
+
+// --- Quality Toggles ---
+
+function toggleQualityBtn(btnId, getter, setter) {
+  document.getElementById(btnId).addEventListener('click', () => {
+    if (!player) return;
+    const btn = document.getElementById(btnId);
+    const enabled = !getter();
+    setter(enabled);
+    btn.className = enabled ? 'toggle-on' : 'toggle-off';
+  });
+}
+
+toggleQualityBtn('btn-phase-lock', () => player.phase_lock(), (v) => player.set_phase_lock(v));
+toggleQualityBtn('btn-cubic', () => player.cubic_resampler(), (v) => player.set_cubic_resampler(v));
+toggleQualityBtn('btn-limiter', () => player.soft_limiter(), (v) => player.set_soft_limiter(v));
+
+document.getElementById('btn-transient').addEventListener('click', () => {
+  if (!player) return;
+  const btn = document.getElementById('btn-transient');
+  const enabled = !player.transient_detect();
+  player.set_transient_detect(enabled);
+  btn.className = enabled ? 'toggle-on' : 'toggle-off';
+  document.getElementById('transient-sens').classList.toggle('hidden', !enabled);
+});
+
+document.getElementById('sens-slider').addEventListener('input', (e) => {
+  const pct = parseInt(e.target.value);
+  document.getElementById('sens-value').textContent = pct + '%';
+  if (player) {
+    player.set_transient_sensitivity(pct / 100);
   }
 });
 

@@ -3,6 +3,9 @@ use crate::vocoder::StreamingPhaseVocoder;
 
 use std::f32::consts::PI;
 
+// Generated from www/config/player-defaults.json by build.rs.
+include!(concat!(env!("OUT_DIR"), "/defaults_generated.rs"));
+
 const FFT_SIZE: usize = 4096;
 const OVERLAP: usize = 8;
 const FEED_CHUNK: usize = 512;
@@ -28,6 +31,11 @@ pub struct AudioProcessor {
     mid_side_mode: bool,    // Post-processing stereo width correction.
     stereo_correction: f64, // Smoothed stereo width correction factor.
     gain_comp_amount: f64,  // Fixed makeup gain amount (0.0 = 0dB, 1.0 = +6dB).
+    soft_limiter_enabled: bool,
+    cubic_resampler_enabled: bool,
+    phase_lock_enabled: bool,
+    transient_detect_enabled: bool,
+    transient_sensitivity: f64,
 
     // Per-channel temp buffers.
     mono_in: Vec<f32>,
@@ -50,9 +58,14 @@ impl AudioProcessor {
             pitch_semitones: 0.0,
             playing: false,
             vocoder_primed: false,
-            mid_side_mode: true,
+            mid_side_mode: DEFAULT_MID_SIDE_MODE,
             stereo_correction: 1.0,
-            gain_comp_amount: 0.5,
+            gain_comp_amount: DEFAULT_GAIN_COMP_AMOUNT,
+            soft_limiter_enabled: DEFAULT_SOFT_LIMITER,
+            cubic_resampler_enabled: DEFAULT_CUBIC_RESAMPLER,
+            phase_lock_enabled: DEFAULT_PHASE_LOCK,
+            transient_detect_enabled: DEFAULT_TRANSIENT_DETECT,
+            transient_sensitivity: DEFAULT_TRANSIENT_SENSITIVITY,
             mono_in: Vec::new(),
             mono_stretched: Vec::new(),
             mono_resampled: Vec::new(),
@@ -86,6 +99,7 @@ impl AudioProcessor {
             self.vocoders.push(StreamingPhaseVocoder::new(FFT_SIZE, OVERLAP));
             self.resamplers.push(StreamingResampler::new());
         }
+        self.propagate_feature_flags();
         self.apply_dsp_params();
     }
 
@@ -120,6 +134,7 @@ impl AudioProcessor {
             self.vocoders.push(StreamingPhaseVocoder::new(FFT_SIZE, OVERLAP));
             self.resamplers.push(StreamingResampler::new());
         }
+        self.propagate_feature_flags();
         self.apply_dsp_params();
     }
 
@@ -145,6 +160,58 @@ impl AudioProcessor {
 
     pub fn gain_comp_amount(&self) -> f64 {
         self.gain_comp_amount
+    }
+
+    pub fn set_soft_limiter(&mut self, enabled: bool) {
+        self.soft_limiter_enabled = enabled;
+    }
+
+    pub fn soft_limiter(&self) -> bool {
+        self.soft_limiter_enabled
+    }
+
+    pub fn set_cubic_resampler(&mut self, enabled: bool) {
+        self.cubic_resampler_enabled = enabled;
+        for r in &mut self.resamplers {
+            r.set_cubic(enabled);
+        }
+    }
+
+    pub fn cubic_resampler(&self) -> bool {
+        self.cubic_resampler_enabled
+    }
+
+    pub fn set_phase_lock(&mut self, enabled: bool) {
+        self.phase_lock_enabled = enabled;
+        for v in &mut self.vocoders {
+            v.set_phase_lock(enabled);
+        }
+    }
+
+    pub fn phase_lock(&self) -> bool {
+        self.phase_lock_enabled
+    }
+
+    pub fn set_transient_detect(&mut self, enabled: bool) {
+        self.transient_detect_enabled = enabled;
+        for v in &mut self.vocoders {
+            v.set_transient_detect(enabled);
+        }
+    }
+
+    pub fn transient_detect(&self) -> bool {
+        self.transient_detect_enabled
+    }
+
+    pub fn set_transient_sensitivity(&mut self, sensitivity: f64) {
+        self.transient_sensitivity = sensitivity.clamp(0.0, 1.0);
+        for v in &mut self.vocoders {
+            v.set_transient_sensitivity(sensitivity as f32);
+        }
+    }
+
+    pub fn transient_sensitivity(&self) -> f64 {
+        self.transient_sensitivity
     }
 
     pub fn play(&mut self) {
@@ -215,6 +282,17 @@ impl AudioProcessor {
         self.apply_dsp_params();
     }
 
+    fn propagate_feature_flags(&mut self) {
+        for v in &mut self.vocoders {
+            v.set_phase_lock(self.phase_lock_enabled);
+            v.set_transient_detect(self.transient_detect_enabled);
+            v.set_transient_sensitivity(self.transient_sensitivity as f32);
+        }
+        for r in &mut self.resamplers {
+            r.set_cubic(self.cubic_resampler_enabled);
+        }
+    }
+
     fn apply_dsp_params(&mut self) {
         let pitch_ratio = 2.0f64.powf(self.pitch_semitones / 12.0);
         let vocoder_stretch = pitch_ratio / self.tempo_ratio;
@@ -261,7 +339,8 @@ impl AudioProcessor {
             while self.vocoders[0].can_process() && self.vocoders[1].can_process() {
                 self.vocoders[0].try_process_frame();
                 let increments = self.vocoders[0].last_phase_increments().to_vec();
-                self.vocoders[1].process_frame_linked(&increments);
+                let is_transient = self.vocoders[0].last_was_transient();
+                self.vocoders[1].process_frame_linked(&increments, is_transient);
             }
         } else {
             while self.vocoders[0].can_process() {
@@ -379,7 +458,8 @@ impl AudioProcessor {
                 while self.vocoders[0].can_process() && self.vocoders[1].can_process() {
                     self.vocoders[0].try_process_frame();
                     let increments = self.vocoders[0].last_phase_increments().to_vec();
-                    self.vocoders[1].process_frame_linked(&increments);
+                    let is_transient = self.vocoders[0].last_was_transient();
+                    self.vocoders[1].process_frame_linked(&increments, is_transient);
                 }
             } else {
                 // Mono: process normally.
@@ -529,7 +609,22 @@ impl AudioProcessor {
                 output[f * 2] = (l * gain) as f32;
                 output[f * 2 + 1] = (r * gain) as f32;
             }
+
+            if self.soft_limiter_enabled {
+                output[f * 2] = soft_clip(output[f * 2]);
+                output[f * 2 + 1] = soft_clip(output[f * 2 + 1]);
+            }
         }
+    }
+}
+
+fn soft_clip(x: f32) -> f32 {
+    let abs_x = x.abs();
+    if abs_x < 0.9 {
+        x
+    } else {
+        let compressed = 0.9 + 0.1 * ((abs_x - 0.9) / 0.1).tanh();
+        x.signum() * compressed
     }
 }
 
@@ -699,6 +794,273 @@ mod tests {
             let error_pct = (effective_ratio - expected_ratio).abs() / expected_ratio * 100.0;
             assert!(error_pct < 15.0, "{label}: error {error_pct:.1}% exceeds 15%");
         }
+    }
+
+    #[test]
+    fn test_processor_new_defaults() {
+        let proc = AudioProcessor::new(44100);
+        assert_eq!(proc.output_sample_rate, 44100);
+        assert_eq!(proc.channels, 2);
+        assert!(!proc.playing);
+        assert!((proc.tempo_ratio - 1.0).abs() < 1e-6);
+        assert!(proc.pitch_semitones.abs() < 1e-6);
+        assert!((proc.target_tempo - 1.0).abs() < 1e-6);
+        assert!(proc.target_pitch.abs() < 1e-6);
+        // Defaults loaded from config/player-defaults.json via build.rs.
+        assert!(proc.mid_side_mode);
+        assert!((proc.gain_comp_amount - 0.35).abs() < 1e-6);
+        assert!(proc.phase_lock_enabled, "phase_lock should default to true from config");
+        assert!(!proc.transient_detect_enabled);
+        assert!(!proc.cubic_resampler_enabled);
+        assert!(!proc.soft_limiter_enabled);
+        assert!((proc.transient_sensitivity - 0.5).abs() < 1e-6);
+        assert!(proc.source_samples.is_empty());
+        assert!(!proc.is_loaded());
+    }
+
+    #[test]
+    fn test_load_sets_state() {
+        let mut proc = AudioProcessor::new(44100);
+        let samples = make_stereo_sine(440.0, 44100, 1.0);
+        proc.load(samples.clone(), 2, 44100);
+
+        assert!(proc.is_loaded());
+        assert_eq!(proc.channels(), 2);
+        assert_eq!(proc.source_pos, 0);
+        assert!(!proc.is_playing());
+        assert_eq!(proc.vocoders.len(), 2);
+        assert_eq!(proc.resamplers.len(), 2);
+        assert!((proc.duration_secs() - 1.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_load_test_tone() {
+        let mut proc = AudioProcessor::new(44100);
+        proc.load_test_tone(2.0);
+
+        assert!(proc.is_loaded());
+        assert_eq!(proc.channels(), 2);
+        assert!((proc.duration_secs() - 2.0).abs() < 0.01);
+
+        // Should have non-silent samples.
+        let max_abs = proc
+            .source_samples
+            .iter()
+            .map(|s| s.abs())
+            .fold(0.0f32, f32::max);
+        assert!(max_abs > 0.1, "test tone should not be silent");
+    }
+
+    #[test]
+    fn test_set_tempo_pitch_clamping() {
+        let mut proc = AudioProcessor::new(44100);
+
+        proc.set_tempo(0.1);
+        assert!((proc.target_tempo - 0.25).abs() < 1e-6, "tempo below min should clamp to 0.25");
+
+        proc.set_tempo(10.0);
+        assert!((proc.target_tempo - 4.0).abs() < 1e-6, "tempo above max should clamp to 4.0");
+
+        proc.set_pitch(-20.0);
+        assert!((proc.target_pitch - (-12.0)).abs() < 1e-6, "pitch below min should clamp to -12");
+
+        proc.set_pitch(20.0);
+        assert!((proc.target_pitch - 12.0).abs() < 1e-6, "pitch above max should clamp to 12");
+    }
+
+    #[test]
+    fn test_mid_side_and_gain_accessors() {
+        let mut proc = AudioProcessor::new(44100);
+
+        assert!(proc.mid_side_mode());
+        proc.set_mid_side_mode(false);
+        assert!(!proc.mid_side_mode());
+        proc.set_mid_side_mode(true);
+        assert!(proc.mid_side_mode());
+
+        assert!((proc.gain_comp_amount() - 0.35).abs() < 1e-6);
+        proc.set_gain_comp_amount(0.0);
+        assert!(proc.gain_comp_amount().abs() < 1e-6);
+        proc.set_gain_comp_amount(1.0);
+        assert!((proc.gain_comp_amount() - 1.0).abs() < 1e-6);
+
+        // Clamping.
+        proc.set_gain_comp_amount(-0.5);
+        assert!(proc.gain_comp_amount().abs() < 1e-6);
+        proc.set_gain_comp_amount(2.0);
+        assert!((proc.gain_comp_amount() - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_play_pause_state() {
+        let mut proc = AudioProcessor::new(44100);
+        assert!(!proc.is_playing());
+
+        proc.play();
+        assert!(proc.is_playing());
+
+        proc.pause();
+        assert!(!proc.is_playing());
+    }
+
+    #[test]
+    fn test_seek_resets_position() {
+        let mut proc = AudioProcessor::new(44100);
+        let samples = make_stereo_sine(440.0, 44100, 2.0);
+        proc.load(samples, 2, 44100);
+
+        proc.seek(1.0);
+        assert!((proc.position_secs() - 1.0).abs() < 0.01);
+        assert!(!proc.vocoder_primed);
+        assert!((proc.stereo_correction - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_position_duration_math() {
+        let mut proc = AudioProcessor::new(44100);
+        let samples = make_stereo_sine(440.0, 44100, 3.0);
+        proc.load(samples, 2, 44100);
+
+        assert!((proc.duration_secs() - 3.0).abs() < 0.01);
+        assert!(proc.position_secs().abs() < 0.001);
+
+        proc.seek(1.5);
+        assert!((proc.position_secs() - 1.5).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_bypass_detection() {
+        let mut proc = AudioProcessor::new(44100);
+
+        // Default state (tempo=1.0, pitch=0.0) should be bypass.
+        assert!(proc.is_bypass());
+
+        // Changing tempo should exit bypass.
+        proc.target_tempo = 0.5;
+        proc.tempo_ratio = 0.5;
+        assert!(!proc.is_bypass());
+
+        // Back to neutral.
+        proc.target_tempo = 1.0;
+        proc.tempo_ratio = 1.0;
+        assert!(proc.is_bypass());
+
+        // Changing pitch should exit bypass.
+        proc.target_pitch = 3.0;
+        proc.pitch_semitones = 3.0;
+        assert!(!proc.is_bypass());
+    }
+
+    #[test]
+    fn test_smooth_convergence() {
+        let mut proc = AudioProcessor::new(44100);
+        let samples = make_stereo_sine(440.0, 44100, 1.0);
+        proc.load(samples, 2, 44100);
+
+        proc.target_tempo = 2.0;
+        proc.target_pitch = 6.0;
+
+        // Run smoothing ~10 times, should converge.
+        for _ in 0..10 {
+            proc.smooth_and_update_params();
+        }
+
+        assert!(
+            (proc.tempo_ratio - 2.0).abs() < 0.001,
+            "tempo should converge to 2.0, got {}",
+            proc.tempo_ratio
+        );
+        assert!(
+            (proc.pitch_semitones - 6.0).abs() < 0.01,
+            "pitch should converge to 6.0, got {}",
+            proc.pitch_semitones
+        );
+    }
+
+    #[test]
+    fn test_apply_dsp_params_math() {
+        // Verify the formula indirectly: with tempo=0.5 and pitch=+12st,
+        // vocoder_stretch = 2.0/0.5 = 4.0, resample_ratio = 1/2.0 = 0.5.
+        // At tempo=0.5, playback takes 2x longer. With pitch=+12, the vocoder
+        // stretches 4x and the resampler compresses 2x, net output ≈ 2x source length.
+        let (source, output) = run_processor(0.5, 12.0, 2.0);
+        let ratio = output as f64 / source as f64;
+        // tempo=0.5 means 2x output duration regardless of pitch.
+        assert!(
+            ratio > 1.5,
+            "tempo=0.5 pitch=+12: expected ratio > 1.5, got {ratio:.3}"
+        );
+    }
+
+    #[test]
+    fn test_prime_vocoders_sets_flag() {
+        let mut proc = AudioProcessor::new(44100);
+        let samples = make_stereo_sine(440.0, 44100, 2.0);
+        proc.load(samples, 2, 44100);
+
+        // Seek to 1s so there's lookback data.
+        proc.seek(1.0);
+        assert!(!proc.vocoder_primed);
+
+        proc.prime_vocoders();
+        assert!(proc.vocoder_primed);
+    }
+
+    #[test]
+    fn test_gain_compensation_applies() {
+        let mut proc = AudioProcessor::new(44100);
+        let samples = make_stereo_sine(440.0, 44100, 2.0);
+        proc.load(samples, 2, 44100);
+
+        proc.set_tempo(0.75);
+        proc.tempo_ratio = 0.75;
+        proc.target_tempo = 0.75;
+        proc.set_mid_side_mode(false);
+
+        // Run with gain=0.
+        proc.set_gain_comp_amount(0.0);
+        proc.apply_dsp_params();
+        proc.play();
+        let out_no_gain = proc.fill_output(4096);
+
+        // Reset and run with gain=1.0.
+        proc.seek(0.0);
+        proc.set_gain_comp_amount(1.0);
+        proc.apply_dsp_params();
+        proc.play();
+        let out_with_gain = proc.fill_output(4096);
+
+        let rms_no = rms(&out_no_gain);
+        let rms_with = rms(&out_with_gain);
+
+        // gain=1.0 → +6dB → ~2x amplitude → ~2x RMS.
+        assert!(
+            rms_with > rms_no * 1.3,
+            "gain should increase RMS: no_gain={rms_no:.4}, with_gain={rms_with:.4}"
+        );
+    }
+
+    #[test]
+    fn test_resample_buffer_ratio() {
+        let samples = make_stereo_sine(440.0, 44100, 1.0);
+        let frames = samples.len() / 2;
+
+        let resampled = resample_buffer(&samples, 2, 2.0);
+        let out_frames = resampled.len() / 2;
+
+        let ratio = out_frames as f64 / frames as f64;
+        assert!(
+            (ratio - 2.0).abs() < 0.1,
+            "expected ~2.0x frames, got {ratio:.3}"
+        );
+    }
+
+    fn rms(samples: &[f32]) -> f64 {
+        if samples.is_empty() {
+            return 0.0;
+        }
+        let sum: f64 = samples.iter().map(|s| (*s as f64) * (*s as f64)).sum();
+        (sum / samples.len() as f64).sqrt()
     }
 }
 

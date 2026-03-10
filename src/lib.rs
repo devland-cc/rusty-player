@@ -128,4 +128,51 @@ impl RustyPlayer {
         };
         serde_wasm_bindgen::to_value(&info).unwrap_or(JsValue::NULL)
     }
+
+    // --- Audio quality feature toggles ---
+
+    /// Enable/disable soft limiter (prevents clipping from gain compensation).
+    pub fn set_soft_limiter(&mut self, enabled: bool) {
+        self.processor.set_soft_limiter(enabled);
+    }
+
+    pub fn soft_limiter(&self) -> bool {
+        self.processor.soft_limiter()
+    }
+
+    /// Enable/disable cubic Hermite resampler (flatter frequency response).
+    pub fn set_cubic_resampler(&mut self, enabled: bool) {
+        self.processor.set_cubic_resampler(enabled);
+    }
+
+    pub fn cubic_resampler(&self) -> bool {
+        self.processor.cubic_resampler()
+    }
+
+    /// Enable/disable identity phase locking (reduces phasiness).
+    pub fn set_phase_lock(&mut self, enabled: bool) {
+        self.processor.set_phase_lock(enabled);
+    }
+
+    pub fn phase_lock(&self) -> bool {
+        self.processor.phase_lock()
+    }
+
+    /// Enable/disable transient detection with phase reset.
+    pub fn set_transient_detect(&mut self, enabled: bool) {
+        self.processor.set_transient_detect(enabled);
+    }
+
+    pub fn transient_detect(&self) -> bool {
+        self.processor.transient_detect()
+    }
+
+    /// Set transient detection sensitivity (0.0 = very sensitive, 1.0 = hard to trigger).
+    pub fn set_transient_sensitivity(&mut self, sensitivity: f64) {
+        self.processor.set_transient_sensitivity(sensitivity);
+    }
+
+    pub fn transient_sensitivity(&self) -> f64 {
+        self.processor.transient_sensitivity()
+    }
 }

@@ -1,0 +1,297 @@
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  background: #0d0d0d;
+  color: #e0e0e0;
+  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+  display: flex;
+  justify-content: center;
+  padding: 24px 16px;
+  min-height: 100vh;
+}
+
+#app {
+  width: 100%;
+  max-width: 860px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+header h1 {
+  font-size: 1.4rem;
+  font-weight: 600;
+  color: #00d4ff;
+  text-align: center;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+}
+
+/* Decks grid */
+#decks {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 20px;
+}
+
+.deck {
+  background: #111;
+  border: 1px solid #222;
+  border-radius: 12px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+}
+
+.deck h2 {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #00d4ff;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+}
+
+/* File loader */
+.file-btn {
+  display: inline-block;
+  padding: 8px 20px;
+  background: #1a1a1a;
+  border: 1px solid #333;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.8rem;
+  color: #e0e0e0;
+  font-family: inherit;
+  transition: border-color 0.2s, background 0.2s;
+}
+
+.file-btn:hover {
+  border-color: #00d4ff;
+  background: #222;
+}
+
+.file-btn input {
+  display: none;
+}
+
+.deck-info {
+  font-size: 0.65rem;
+  color: #555;
+  text-align: center;
+  min-height: 1.2em;
+}
+
+/* XY Pad (smaller) */
+.xy-container {
+  position: relative;
+  width: 220px;
+  height: 220px;
+  padding: 18px;
+}
+
+.axis-label {
+  position: absolute;
+  font-size: 0.55rem;
+  color: #444;
+  user-select: none;
+}
+
+.label-top { top: 1px; left: 50%; transform: translateX(-50%); }
+.label-bottom { bottom: 1px; left: 50%; transform: translateX(-50%); }
+.label-left { left: 1px; top: 50%; transform: translateY(-50%); }
+.label-right { right: 1px; top: 50%; transform: translateY(-50%); }
+
+.xy-pad {
+  width: 180px;
+  height: 180px;
+  background: #1a1a1a;
+  border: 1px solid #333;
+  border-radius: 8px;
+  position: relative;
+  cursor: crosshair;
+  overflow: hidden;
+  touch-action: none;
+}
+
+.crosshair-h {
+  position: absolute;
+  left: 0; right: 0;
+  height: 1px;
+  background: #333;
+  top: 50%;
+  pointer-events: none;
+}
+
+.crosshair-v {
+  position: absolute;
+  top: 0; bottom: 0;
+  width: 1px;
+  background: #333;
+  left: 50%;
+  pointer-events: none;
+}
+
+.xy-dot {
+  position: absolute;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #00d4ff;
+  box-shadow: 0 0 10px #00d4ff, 0 0 3px #00d4ff;
+  transform: translate(-50%, -50%);
+  left: 50%;
+  top: 50%;
+  pointer-events: none;
+}
+
+/* XY Reset button */
+.btn-reset-xy {
+  display: block;
+  margin: 6px auto 0;
+  padding: 3px 14px;
+  background: transparent;
+  border: 1px solid #333;
+  border-radius: 4px;
+  color: #555;
+  font-family: inherit;
+  font-size: 0.55rem;
+  letter-spacing: 2px;
+  cursor: pointer;
+  transition: border-color 0.2s, color 0.2s;
+}
+
+.btn-reset-xy:hover {
+  border-color: #00d4ff;
+  color: #00d4ff;
+}
+
+/* Param display */
+.param-display {
+  display: flex;
+  gap: 24px;
+  justify-content: center;
+}
+
+.param {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+}
+
+.param-label {
+  font-size: 0.55rem;
+  color: #555;
+  letter-spacing: 2px;
+}
+
+.param-value {
+  font-size: 0.9rem;
+  color: #00d4ff;
+  font-weight: 600;
+}
+
+/* Transport */
+.deck-transport {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.deck-transport button {
+  width: 34px;
+  height: 34px;
+  border: 1px solid #333;
+  border-radius: 6px;
+  background: #1a1a1a;
+  color: #e0e0e0;
+  font-size: 0.85rem;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: border-color 0.2s, background 0.2s;
+}
+
+.deck-transport button:hover {
+  border-color: #00d4ff;
+  background: #222;
+  color: #00d4ff;
+}
+
+.time-display {
+  font-size: 0.7rem;
+  color: #888;
+  margin-left: 6px;
+  min-width: 85px;
+}
+
+/* Crossfader */
+#crossfader-section {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 0;
+}
+
+.cf-label {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #00d4ff;
+  min-width: 16px;
+  text-align: center;
+}
+
+#crossfader {
+  -webkit-appearance: none;
+  appearance: none;
+  flex: 1;
+  height: 6px;
+  background: #333;
+  border-radius: 3px;
+  outline: none;
+}
+
+#crossfader::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: #00d4ff;
+  cursor: pointer;
+  box-shadow: 0 0 8px #00d4ff;
+}
+
+#crossfader::-moz-range-thumb {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: #00d4ff;
+  cursor: pointer;
+  border: none;
+  box-shadow: 0 0 8px #00d4ff;
+}
+
+/* Status */
+#status {
+  font-size: 0.7rem;
+  color: #555;
+  text-align: center;
+}
+
+#status.error { color: #ff4444; }
+#status.loading { color: #ffaa00; }
+
+/* Responsive: stack decks on narrow screens */
+@media (max-width: 700px) {
+  #decks {
+    grid-template-columns: 1fr;
+  }
+}

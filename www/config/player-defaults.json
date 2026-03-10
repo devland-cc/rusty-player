@@ -1,0 +1,9 @@
+{
+  "gain_comp_amount": 0.35,
+  "mid_side_mode": true,
+  "phase_lock": true,
+  "transient_detect": false,
+  "cubic_resampler": false,
+  "soft_limiter": false,
+  "transient_sensitivity": 0.5
+}

@@ -1,3 +1,5 @@
 target/
 www/pkg/
 .claude/
+samples/
+.DS_Store

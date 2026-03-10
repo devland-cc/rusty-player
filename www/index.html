@@ -4,66 +4,34 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>rusty-player</title>
-  <link rel="stylesheet" href="style.css" />
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      background: #0d0d0d; color: #e0e0e0;
+      font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+      display: flex; justify-content: center; align-items: center; min-height: 100vh;
+    }
+    .container { text-align: center; }
+    h1 { font-size: 1.4rem; font-weight: 600; color: #00d4ff; letter-spacing: 2px;
+         text-transform: uppercase; margin-bottom: 32px; }
+    a { display: block; padding: 16px 48px; margin: 16px; border: 1px solid #333;
+        border-radius: 8px; color: #e0e0e0; text-decoration: none; background: #1a1a1a;
+        font-family: inherit; font-size: 0.9rem; transition: border-color 0.2s, color 0.2s; }
+    a:hover { border-color: #00d4ff; color: #00d4ff; }
+    .desc { font-size: 0.65rem; color: #555; margin-top: 4px; }
+  </style>
 </head>
 <body>
-  <div id="app">
-    <header>
-      <h1>rusty-player</h1>
-    </header>
-
-    <div id="upload-zone">
-      <label class="file-btn">
-        Load MP3
-        <input type="file" id="file-input" accept=".mp3,audio/mpeg" />
-      </label>
-      <button id="btn-test-tone" class="file-btn" style="margin-left:8px;cursor:pointer;">Test Tone (440Hz)</button>
-      <div id="track-info">No track loaded</div>
-    </div>
-
-    <div id="controls" class="hidden">
-      <div id="xy-container">
-        <div class="axis-label label-top">+12 st</div>
-        <div class="axis-label label-bottom">-12 st</div>
-        <div class="axis-label label-left">0.5x</div>
-        <div class="axis-label label-right">2.0x</div>
-        <div id="xy-pad">
-          <div id="crosshair-h"></div>
-          <div id="crosshair-v"></div>
-          <div id="xy-dot"></div>
-        </div>
-      </div>
-
-      <div id="param-display">
-        <div class="param">
-          <span class="param-label">TEMPO</span>
-          <span id="tempo-display" class="param-value">1.00x</span>
-        </div>
-        <div class="param">
-          <span class="param-label">PITCH</span>
-          <span id="pitch-display" class="param-value">0.0 st</span>
-        </div>
-      </div>
-
-      <div id="transport">
-        <button id="btn-play" title="Play">&#9654;</button>
-        <button id="btn-pause" title="Pause">&#9646;&#9646;</button>
-        <button id="btn-stop" title="Stop">&#9632;</button>
-        <button id="btn-reset" title="Reset XY">&#8634;</button>
-        <button id="btn-ms" class="toggle-on" title="Stereo width preservation">M/S</button>
-        <span id="time-display">0:00 / 0:00</span>
-      </div>
-
-      <div id="gain-comp">
-        <span class="param-label">GAIN COMP</span>
-        <input type="range" id="gain-slider" min="0" max="100" value="50" />
-        <span id="gain-value" class="param-value-sm">50%</span>
-      </div>
-    </div>
-
-    <div id="status">Initializing...</div>
+  <div class="container">
+    <h1>rusty-player</h1>
+    <a href="RtTempoPitchQA/">
+      Real-Time Tempo &amp; Pitch QA
+      <div class="desc">Quality analysis with full DSP controls</div>
+    </a>
+    <a href="AutoDJ/">
+      AutoDJ
+      <div class="desc">Dual-deck player with crossfader</div>
+    </a>
   </div>
-
-  <script type="module" src="app.js"></script>
 </body>
 </html>
