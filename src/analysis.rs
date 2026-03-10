@@ -10,6 +10,17 @@ use std::sync::Arc;
 
 // ── Result type ──
 
+/// A key detection at a specific point in time.
+#[derive(serde::Serialize, Clone, Debug)]
+pub struct KeySegment {
+    /// Start time in seconds (source time).
+    pub time: f64,
+    /// Detected key (e.g. "E major", "C# minor").
+    pub key: String,
+    /// Pearson correlation confidence [0, 1].
+    pub confidence: f64,
+}
+
 /// Analysis result returned to JS via serde_wasm_bindgen.
 #[derive(serde::Serialize, Clone, Debug)]
 pub struct AnalysisResult {
@@ -20,6 +31,8 @@ pub struct AnalysisResult {
     pub first_beat_secs: f64,
     /// Beat positions in seconds (source time). Tracks tempo changes within the song.
     pub beat_times: Vec<f64>,
+    /// Local key detections at regular intervals through the track.
+    pub key_segments: Vec<KeySegment>,
 }
 
 // ── Constants ──
@@ -29,11 +42,20 @@ const BPM_HOP_SIZE: usize = 256;
 const KEY_FFT_SIZE: usize = 2048;
 const KEY_HOP_SIZE: usize = 1024;
 
-/// Temperley major key profile (starting from C).
-const MAJOR_PROFILE: [f64; 12] = [5.0, 2.0, 3.5, 2.0, 4.5, 4.0, 2.0, 4.5, 2.0, 3.5, 1.5, 4.0];
+/// Krumhansl-Kessler major key profile (starting from C).
+///
+/// Based on perceptual probe-tone experiments (Krumhansl & Kessler, 1982).
+/// Better pop/rock major/minor discrimination than Temperley profiles because
+/// the ♭7th and leading tone weights are empirically balanced rather than
+/// biased toward classical harmonic-minor conventions.
+const MAJOR_PROFILE: [f64; 12] = [
+    6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88,
+];
 
-/// Temperley minor key profile (starting from C).
-const MINOR_PROFILE: [f64; 12] = [5.0, 2.0, 3.5, 4.5, 2.0, 4.0, 2.0, 4.5, 3.5, 2.0, 1.5, 4.0];
+/// Krumhansl-Kessler minor key profile (starting from C).
+const MINOR_PROFILE: [f64; 12] = [
+    6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17,
+];
 
 const NOTE_NAMES: [&str; 12] = [
     "C", "C#", "D", "Eb", "E", "F", "F#", "G", "Ab", "A", "Bb", "B",
@@ -60,6 +82,7 @@ pub fn analyze_track(
         key_confidence: 0.0,
         first_beat_secs: 0.0,
         beat_times: Vec::new(),
+        key_segments: Vec::new(),
     };
 
     if samples.is_empty() || channels == 0 || sample_rate == 0 {
@@ -96,6 +119,7 @@ pub fn analyze_track(
             key_confidence,
             first_beat_secs: 0.0,
             beat_times: Vec::new(),
+            key_segments: Vec::new(),
         };
     }
 
@@ -127,8 +151,11 @@ pub fn analyze_track(
         Vec::new()
     };
 
-    // 6. Key detection.
+    // 6. Key detection (global).
     let (key, key_confidence) = detect_key(&downsampled, ds_rate, &fft_key);
+
+    // 7. Windowed key segments for real-time display.
+    let key_segments = compute_key_segments(&downsampled, ds_rate, &fft_key);
 
     AnalysisResult {
         bpm,
@@ -137,6 +164,7 @@ pub fn analyze_track(
         key_confidence,
         first_beat_secs,
         beat_times,
+        key_segments,
     }
 }
 
@@ -650,6 +678,103 @@ fn detect_key(
     correlate_key_profiles(&chroma)
 }
 
+/// Compute key segments at regular intervals through the track.
+///
+/// Uses a sliding window (~10s) stepping every ~4s to detect local key changes.
+/// Applies hysteresis: only changes displayed key when a new key dominates for
+/// 2+ consecutive windows, preventing jittery chord-level fluctuations.
+fn compute_key_segments(
+    audio: &[f32],
+    sample_rate: u32,
+    fft_forward: &Arc<dyn Fft<f32>>,
+) -> Vec<KeySegment> {
+    let window_secs = 10.0;
+    let step_secs = 4.0;
+    let window_samples = (window_secs * sample_rate as f64) as usize;
+    let step_samples = (step_secs * sample_rate as f64) as usize;
+
+    if audio.len() < window_samples || step_samples == 0 {
+        // Track too short for windowed analysis — return single global key.
+        let (key, confidence) = detect_key(audio, sample_rate, fft_forward);
+        if key != "---" {
+            return vec![KeySegment {
+                time: 0.0,
+                key,
+                confidence,
+            }];
+        }
+        return Vec::new();
+    }
+
+    // Pass 1: compute raw key for each window position.
+    let mut raw_segments: Vec<(f64, String, f64)> = Vec::new();
+    let mut pos = 0usize;
+
+    while pos + window_samples <= audio.len() {
+        let slice = &audio[pos..pos + window_samples];
+        let chroma =
+            compute_chromagram(slice, sample_rate, fft_forward, KEY_FFT_SIZE, KEY_HOP_SIZE);
+        let total: f64 = chroma.iter().sum();
+
+        let (key, confidence) = if total > 1e-10 {
+            correlate_key_profiles(&chroma)
+        } else {
+            ("---".to_string(), 0.0)
+        };
+
+        let time = pos as f64 / sample_rate as f64;
+        raw_segments.push((time, key, confidence));
+        pos += step_samples;
+    }
+
+    if raw_segments.is_empty() {
+        return Vec::new();
+    }
+
+    // Pass 2: hysteresis — only switch key when the new key appears in 2+ consecutive windows.
+    let mut segments: Vec<KeySegment> = Vec::new();
+    let mut current_key = raw_segments[0].1.clone();
+    let mut current_conf = raw_segments[0].2;
+    let mut pending_key: Option<String> = None;
+    let mut pending_count = 0u32;
+
+    segments.push(KeySegment {
+        time: raw_segments[0].0,
+        key: current_key.clone(),
+        confidence: current_conf,
+    });
+
+    for &(time, ref key, confidence) in &raw_segments[1..] {
+        if *key == current_key {
+            // Same key — reset any pending change.
+            let _ = confidence; // Confidence tracked only at segment boundaries.
+            pending_key = None;
+            pending_count = 0;
+        } else if pending_key.as_deref() == Some(key) {
+            // Same new key as last window — increment pending count.
+            pending_count += 1;
+            if pending_count >= 2 {
+                // Confirmed key change.
+                current_key = key.clone();
+                current_conf = confidence;
+                pending_key = None;
+                pending_count = 0;
+                segments.push(KeySegment {
+                    time,
+                    key: current_key.clone(),
+                    confidence: current_conf,
+                });
+            }
+        } else {
+            // Different key from both current and pending — start new pending.
+            pending_key = Some(key.clone());
+            pending_count = 1;
+        }
+    }
+
+    segments
+}
+
 /// Compute a 12-bin chromagram from the audio.
 fn compute_chromagram(
     audio: &[f32],
@@ -786,6 +911,20 @@ mod tests {
             .collect()
     }
 
+    /// Generate a chord (multiple simultaneous sine waves) for key detection testing.
+    fn make_chord(freqs: &[f32], sample_rate: f32, duration_secs: f32) -> Vec<f32> {
+        let n = (sample_rate * duration_secs) as usize;
+        let amp = 0.4 / freqs.len() as f32;
+        (0..n)
+            .map(|i| {
+                freqs
+                    .iter()
+                    .map(|&f| (2.0 * PI * f * i as f32 / sample_rate).sin() * amp)
+                    .sum::<f32>()
+            })
+            .collect()
+    }
+
     /// Generate a synthetic click track at a given BPM.
     fn make_click_track(bpm: f64, sample_rate: u32, duration_secs: f64) -> Vec<f32> {
         let total = (sample_rate as f64 * duration_secs) as usize;
@@ -861,6 +1000,55 @@ mod tests {
             (result.bpm - 90.0).abs() < 5.0,
             "Expected ~90 BPM, got {}",
             result.bpm
+        );
+    }
+
+    #[test]
+    fn test_key_detection_e_minor_chord() {
+        // E minor chord: E4 (329.63) + G4 (392.00) + B4 (493.88).
+        // Multiple octaves for richer harmonic content.
+        let track = make_chord(
+            &[164.81, 196.00, 246.94, 329.63, 392.00, 493.88, 659.26],
+            44100.0,
+            15.0,
+        );
+        let result = analyze_track(&track, 1, 44100);
+        assert_eq!(
+            result.key, "E minor",
+            "E minor chord should detect as E minor, got '{}'",
+            result.key
+        );
+    }
+
+    #[test]
+    fn test_key_detection_e_major_chord() {
+        // E major chord: E4 (329.63) + G#4 (415.30) + B4 (493.88).
+        let track = make_chord(
+            &[164.81, 207.65, 246.94, 329.63, 415.30, 493.88, 659.26],
+            44100.0,
+            15.0,
+        );
+        let result = analyze_track(&track, 1, 44100);
+        assert_eq!(
+            result.key, "E major",
+            "E major chord should detect as E major, got '{}'",
+            result.key
+        );
+    }
+
+    #[test]
+    fn test_key_detection_c_minor_chord() {
+        // C minor chord: C4 (261.63) + Eb4 (311.13) + G4 (392.00).
+        let track = make_chord(
+            &[130.81, 155.56, 196.00, 261.63, 311.13, 392.00, 523.25],
+            44100.0,
+            15.0,
+        );
+        let result = analyze_track(&track, 1, 44100);
+        assert!(
+            result.key.contains("minor"),
+            "C minor chord should detect as minor, got '{}'",
+            result.key
         );
     }
 
@@ -1088,5 +1276,116 @@ mod tests {
     fn test_empty_track_has_no_beats() {
         let result = analyze_track(&[], 2, 44100);
         assert!(result.beat_times.is_empty());
+    }
+
+    // ── Key segment tests ──
+
+    #[test]
+    fn test_key_segments_single_key() {
+        // A 30-second A440 sine — should have key segments and all should be A.
+        let track = make_mono_sine(440.0, 44100.0, 30.0);
+        let result = analyze_track(&track, 1, 44100);
+
+        assert!(
+            !result.key_segments.is_empty(),
+            "Should have key segments for a 30s sine"
+        );
+
+        for seg in &result.key_segments {
+            assert!(
+                seg.key.starts_with('A'),
+                "Expected A key segment, got '{}' at t={:.1}s",
+                seg.key,
+                seg.time
+            );
+        }
+    }
+
+    #[test]
+    fn test_key_segments_monotonic_times() {
+        let track = make_mono_sine(440.0, 44100.0, 30.0);
+        let result = analyze_track(&track, 1, 44100);
+
+        // Segment times must be non-decreasing.
+        for w in result.key_segments.windows(2) {
+            assert!(
+                w[1].time >= w[0].time,
+                "Key segment times not monotonic: {} > {}",
+                w[0].time,
+                w[1].time
+            );
+        }
+    }
+
+    #[test]
+    fn test_key_segments_short_track_fallback() {
+        // A 5-second track — too short for windowed analysis, should get single segment.
+        let track = make_mono_sine(440.0, 44100.0, 5.0);
+        let result = analyze_track(&track, 1, 44100);
+
+        // Should have at least one key segment (fallback to global key).
+        assert!(
+            !result.key_segments.is_empty(),
+            "Short track should still produce at least one key segment"
+        );
+        assert_eq!(
+            result.key_segments[0].time, 0.0,
+            "First segment should start at time 0"
+        );
+    }
+
+    #[test]
+    fn test_key_segments_empty_track() {
+        let result = analyze_track(&[], 2, 44100);
+        assert!(result.key_segments.is_empty());
+    }
+
+    /// Generate a track that changes pitch (key) partway through.
+    fn make_key_change_track(
+        freq1: f32,
+        freq2: f32,
+        sample_rate: f32,
+        switch_secs: f32,
+        total_secs: f32,
+    ) -> Vec<f32> {
+        let total = (sample_rate * total_secs) as usize;
+        let switch = (sample_rate * switch_secs) as usize;
+        let mut samples = vec![0.0f32; total];
+
+        for i in 0..switch.min(total) {
+            samples[i] = (2.0 * PI * freq1 * i as f32 / sample_rate).sin() * 0.5;
+        }
+        for i in switch..total {
+            samples[i] = (2.0 * PI * freq2 * i as f32 / sample_rate).sin() * 0.5;
+        }
+
+        samples
+    }
+
+    #[test]
+    fn test_key_segments_detect_change() {
+        // 30s of A440, then 30s of C523 — should detect key change.
+        let track = make_key_change_track(440.0, 523.25, 44100.0, 30.0, 60.0);
+        let result = analyze_track(&track, 1, 44100);
+
+        assert!(
+            result.key_segments.len() >= 2,
+            "Expected at least 2 key segments for a key-change track, got {}",
+            result.key_segments.len()
+        );
+
+        // First segment should be A-related, last should be C-related.
+        let first_key = &result.key_segments[0].key;
+        let last_key = &result.key_segments[result.key_segments.len() - 1].key;
+        assert!(
+            first_key.starts_with('A'),
+            "First segment should be A, got '{}'",
+            first_key
+        );
+        assert!(
+            last_key.starts_with('C'),
+            "Last segment should be C, got '{}'",
+            last_key
+        );
     }
 }

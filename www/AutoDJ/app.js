@@ -35,6 +35,12 @@ class Deck {
     this.localBpm = null;
     // Current tempo multiplier from XY pad (cached for BPM display).
     this.currentTempo = 1.0;
+    // Current pitch shift in semitones from XY pad (cached for key display).
+    this.currentPitchSemitones = 0;
+    // Key segments: array of { time, key, confidence } from analysis.
+    this.keySegments = [];
+    // Local key at current playback position (updated in tick loop).
+    this.localKey = null;
 
     // DOM refs.
     this.el = {
@@ -43,8 +49,6 @@ class Deck {
       dot: document.querySelector(`#deck-${id} .xy-dot`),
       crossH: document.querySelector(`#deck-${id} .crosshair-h`),
       crossV: document.querySelector(`#deck-${id} .crosshair-v`),
-      tempoVal: document.querySelector(`.tempo-val[data-deck="${id}"]`),
-      pitchVal: document.querySelector(`.pitch-val[data-deck="${id}"]`),
       bpmVal: document.querySelector(`.bpm-val[data-deck="${id}"]`),
       keyVal: document.querySelector(`.key-val[data-deck="${id}"]`),
       beatLed: document.querySelector(`.beat-led[data-deck="${id}"]`),
@@ -100,11 +104,11 @@ class Deck {
     document.querySelector(`.btn-reset-xy[data-deck="${this.id}"]`)
       .addEventListener('click', () => this.resetXY());
 
-    // Transport.
-    document.querySelector(`.btn-play[data-deck="${this.id}"]`)
-      .addEventListener('click', () => this.play());
-    document.querySelector(`.btn-pause[data-deck="${this.id}"]`)
-      .addEventListener('click', () => this.pause());
+    // Transport: Play toggles play/pause, Stop resets to beginning.
+    this.el.btnPlay = document.querySelector(`.btn-play[data-deck="${this.id}"]`);
+    this.el.btnPlay.addEventListener('click', () => this.togglePlay());
+    document.querySelector(`.btn-stop[data-deck="${this.id}"]`)
+      .addEventListener('click', () => this.stop());
   }
 
   async loadFile(file) {
@@ -129,7 +133,9 @@ class Deck {
         this.bpmConfidence = analysis.bpm_confidence;
         this.keyConfidence = analysis.key_confidence;
         this.beatTimes = analysis.beat_times || [];
+        this.keySegments = analysis.key_segments || [];
         this.localBpm = this.originalBpm;
+        this.localKey = this.originalKey;
 
         this.el.bpmVal.textContent = this.originalBpm !== null
           ? this.originalBpm.toFixed(1) : '---';
@@ -145,7 +151,9 @@ class Deck {
         this.originalBpm = null;
         this.originalKey = null;
         this.beatTimes = [];
+        this.keySegments = [];
         this.localBpm = null;
+        this.localKey = null;
         this.el.bpmVal.textContent = '---';
         this.el.keyVal.textContent = '---';
         setStatus(`Deck ${this.id.toUpperCase()}: loaded`);
@@ -174,6 +182,7 @@ class Deck {
     const semitones = 12 - this.normY * 24;
 
     this.currentTempo = tempo;
+    this.currentPitchSemitones = semitones;
 
     this.el.dot.style.left = (this.normX * 100) + '%';
     this.el.dot.style.top = (this.normY * 100) + '%';
@@ -185,24 +194,29 @@ class Deck {
       this.player.set_pitch(semitones);
     }
 
-    this.el.tempoVal.textContent = tempo.toFixed(2) + 'x';
-    const sign = semitones > 0 ? '+' : '';
-    this.el.pitchVal.textContent = sign + semitones.toFixed(1) + ' st';
-
     // Update displayed BPM: localBPM (or originalBPM fallback) × currentTempo.
     const baseBpm = this.localBpm || this.originalBpm;
     if (baseBpm !== null) {
       this.el.bpmVal.textContent = (baseBpm * tempo).toFixed(1);
     }
 
-    // Update displayed key: transpose original key by pitch semitones.
-    if (this.originalKey !== null) {
-      this.el.keyVal.textContent = transposeKey(this.originalKey, semitones);
+    // Update displayed key: transpose local key (or original fallback) by pitch semitones.
+    const baseKey = this.localKey || this.originalKey;
+    if (baseKey !== null) {
+      this.el.keyVal.textContent = transposeKey(baseKey, semitones);
     }
   }
 
   resetXY() {
     this.updateXY(0.5, 0.5);
+  }
+
+  togglePlay() {
+    if (this.isPlaying) {
+      this.pause();
+    } else {
+      this.play();
+    }
   }
 
   async play() {
@@ -217,6 +231,8 @@ class Deck {
     this.isPlaying = true;
     this.nextStartTime = audioCtx.currentTime + 0.05;
     this.scheduleChunks();
+    this.el.btnPlay.innerHTML = '&#9646;&#9646;'; // Pause icon.
+    this.el.btnPlay.title = 'Pause';
   }
 
   pause() {
@@ -226,6 +242,15 @@ class Deck {
       this.schedulerTimer = null;
     }
     if (this.player) this.player.pause();
+    this.el.btnPlay.innerHTML = '&#9654;'; // Play icon.
+    this.el.btnPlay.title = 'Play';
+  }
+
+  stop() {
+    this.pause();
+    if (this.player && this.player.is_loaded()) {
+      this.player.seek(0);
+    }
   }
 
   scheduleChunks() {
@@ -313,6 +338,31 @@ class Deck {
       // Update BPM display with local BPM × current tempo.
       this.el.bpmVal.textContent = (this.localBpm * this.currentTempo).toFixed(1);
     }
+  }
+
+  /// Update local key from key segments near current playback position.
+  updateLocalKey() {
+    if (this.keySegments.length === 0 || !this.player || !this.player.is_loaded() || !this.isPlaying) {
+      return;
+    }
+
+    const sourcePos = this.player.position_secs();
+
+    // Find the last segment whose time <= sourcePos.
+    let segIdx = 0;
+    for (let i = 1; i < this.keySegments.length; i++) {
+      if (this.keySegments[i].time <= sourcePos) {
+        segIdx = i;
+      } else {
+        break;
+      }
+    }
+
+    const seg = this.keySegments[segIdx];
+    this.localKey = seg.key;
+
+    // Update display: transpose by current pitch shift.
+    this.el.keyVal.textContent = transposeKey(this.localKey, this.currentPitchSemitones);
   }
 
   updateBeatLed() {
@@ -452,6 +502,8 @@ async function initApp() {
     deckB.updateTimeDisplay();
     deckA.updateLocalBpm();
     deckB.updateLocalBpm();
+    deckA.updateLocalKey();
+    deckB.updateLocalKey();
     deckA.updateBeatLed();
     deckB.updateBeatLed();
     requestAnimationFrame(tick);
